@@ -1,0 +1,4 @@
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#080808;color:#F0EAE0;font-family:'Inter','Segoe UI',system-ui,sans-serif;min-height:100vh}
+input,select,textarea,button{font-family:inherit}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:#111}::-webkit-scrollbar-thumb{background:#333;border-radius:3px}::-webkit-scrollbar-thumb:hover{background:#C9A84C}
