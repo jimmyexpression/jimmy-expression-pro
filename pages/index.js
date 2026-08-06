@@ -595,12 +595,12 @@ function Agenda({apts,setApts,clients,svcs,staff,toast,empresa}){
         </div>
       )}
 
-      {modal&&<AptModal type={modal.type} apt={modal.apt} defaultDate={modal.date||sel} clients={clients} svcs={svcs} staff={staff} apts={apts} setApts={setApts} onClose={()=>setModal(null)} toast={toast} empresa={empresa}/>}
+      {modal&&<AptModal type={modal.type} apt={modal.apt} defaultDate={modal.date||sel} clients={clients} setClients={setClients} svcs={svcs} staff={staff} apts={apts} setApts={setApts} onClose={()=>setModal(null)} toast={toast} empresa={empresa}/>}
     </div>
   );
 }
 
-function AptModal({type,apt,defaultDate,clients,svcs,staff,apts,setApts,onClose,toast,empresa}){
+function AptModal({type,apt,defaultDate,clients,setClients,svcs,staff,apts,setApts,onClose,toast,empresa}){
   const COUNTRY_CODES=["+57 🇨🇴","+1 🇺🇸","+34 🇪🇸","+52 🇲🇽","+54 🇦🇷","+55 🇧🇷","+44 🇬🇧","+49 🇩🇪","+33 🇫🇷","+39 🇮🇹"];
   const blank={cid:"nuevo",sid:"s1",sids:["s1"],tid:"auto",date:defaultDate||TODAY,time:"09:00",end:"10:00",status:"confirmed",notes:"",dep:0,paid:false,clienteNuevo:{name:"",phone:"",countryCode:"+57 🇨🇴",email:""}};
   const [f,setF]=useState(apt?{...apt,sids:apt.sids||[apt.sid||"s1"],tid:apt.tid||"auto"}:blank);
@@ -636,12 +636,26 @@ function AptModal({type,apt,defaultDate,clients,svcs,staff,apts,setApts,onClose,
 
   const save=()=>{
     if(!f.date||!f.time){toast("Fecha y hora son requeridos","error");return;}
-    // Si es cliente nuevo, validar nombre
     if(f.cid==="nuevo"&&!(f.clienteNuevo?.name)){toast("Ingresa el nombre del cliente","error");return;}
-    const savedApt={...f,sid:f.sids?.[0]||"s1",sids:f.sids||["s1"],tid:staffAsignado,id:apt?.id||uid()};
+    // Si es cliente nuevo → crearlo en la lista de clientes automáticamente
+    let cid=f.cid;
+    if(f.cid==="nuevo"&&f.clienteNuevo?.name){
+      const nuevoCliente={
+        id:uid(),
+        name:f.clienteNuevo.name,
+        phone:(f.clienteNuevo.countryCode||"+57").replace(/[^+\d]/g,"")+f.clienteNuevo.phone?.replace(/\D/g,""),
+        email:f.clienteNuevo.email||"",
+        bday:"",notes:"",src:"Agenda",tags:[],
+        pts:0,visits:1,spent:0,lastVisit:f.date
+      };
+      setClients(p=>[...p,nuevoCliente]);
+      cid=nuevoCliente.id;
+      toast("Cliente creado y guardado automáticamente ✓");
+    }
+    const savedApt={...f,cid,sid:f.sids?.[0]||"s1",sids:f.sids||["s1"],tid:staffAsignado,id:apt?.id||uid()};
     if(type==="edit"){setApts(p=>p.map(a=>a.id===apt.id?savedApt:a));}
     else{setApts(p=>[...p,savedApt]);}
-    toast(type==="edit"?"Cita actualizada":"Cita creada ✓");onClose();
+    toast(type==="edit"?"Cita actualizada":"Cita agendada ✓");onClose();
   };
   const del=()=>{setApts(p=>p.filter(a=>a.id!==apt.id));toast("Cita eliminada","warn");onClose();};
 
@@ -1117,7 +1131,7 @@ function Clientes({clients,setClients,apts,sales,svcs,staff,toast,empresa}){
 
 
 // ── CAJA CON TIQUETES Y FACTURAS ─────────────────────────────────
-function CajaSection({sales,setSales,apts,clients,svcs,staff,toast,empresa,nextFactura}){
+function CajaSection({sales,setSales,apts,clients,svcs,staff,products,toast,empresa,nextFactura}){
   const [date,setDate]=useState(D0(0));
   const [tab2,setTab2]=useState("dia");
   const [modal,setModal]=useState(false);
@@ -1145,14 +1159,27 @@ function CajaSection({sales,setSales,apts,clients,svcs,staff,toast,empresa,nextF
   },{});
 
   function SaleModal(){
-    const [f,setF]=useState({type:"service",cid:clients[0]?.id||"",sid:"s1",tid:staff[0]?.id||"t1",amount:0,discType:"pct",disc:0,pay:"efectivo",tip:0,notes:"",date,pagos:[{metodo:"efectivo",monto:0}]});
+    // Estado multi-item: soporta varios servicios, productos y estilistas
+    const [items,setItems]=useState([{id:uid(),tipo:"service",sid:"",pid:"",tid:staff[0]?.id||"",monto:0,nota:""}]);
+    const [f,setF]=useState({cid:clients[0]?.id||"",discType:"pct",disc:0,tip:0,date,pagos:[{metodo:"efectivo",monto:0}]});
     const set=(k,v)=>setF(p=>({...p,[k]:v}));
-    const svc2=svcs.find(s=>s.id===f.sid);
-    useEffect(()=>{if(svc2&&f.type==="service"){set("amount",svc2.price);setF(p=>({...p,pagos:[{metodo:"efectivo",monto:svc2.price}]}));}},[ f.sid,f.type]);
 
-    // Descuento en pesos o porcentaje
-    const descMonto=f.discType==="pct"?(+f.amount*(+f.disc/100)):(+f.disc||0);
-    const base=Math.max(0,(+f.amount||0)-descMonto);
+    const addItem=()=>setItems(p=>[...p,{id:uid(),tipo:"service",sid:"",pid:"",tid:staff[0]?.id||"",monto:0,nota:""}]);
+    const remItem=(id)=>setItems(p=>p.filter(x=>x.id!==id));
+    const setItem=(id,k,v)=>setItems(p=>p.map(x=>{
+      if(x.id!==id) return x;
+      const upd={...x,[k]:v};
+      // Auto-precio al seleccionar servicio
+      if(k==="sid"&&v){const s=svcs.find(x=>x.id===v);if(s)upd.monto=s.price;}
+      if(k==="pid"&&v){const p=products?.find(x=>x.id===v);if(p)upd.monto=p.price;}
+      return upd;
+    }));
+
+    const subtotalItems=items.reduce((a,x)=>a+(+x.monto||0),0);
+
+    // Cálculo sobre subtotal de todos los ítems
+    const descMonto=f.discType==="pct"?(subtotalItems*(+f.disc/100)):(+f.disc||0);
+    const base=Math.max(0,subtotalItems-descMonto);
     const net=base+(+f.tip||0);
 
     // Pagos mixtos
@@ -1163,40 +1190,106 @@ function CajaSection({sales,setSales,apts,clients,svcs,staff,toast,empresa,nextF
     const setPago=(i,k,v)=>setF(p=>({...p,pagos:p.pagos.map((pg,idx)=>idx===i?{...pg,[k]:v}:pg)}));
 
     const save=()=>{
+      if(items.length===0){toast("Agrega al menos un ítem","error");return;}
       if(Math.abs(diferencia)>1){toast(`Faltan ${fmt(Math.abs(diferencia))} por asignar a los métodos de pago`,"error");return;}
       const payStr=(f.pagos||[]).length===1?f.pagos[0].metodo:"mixto";
-      const ventaFinal={
-        ...f,
-        id:uid(),
-        amount:+f.amount,
+      // Guardar una venta por ítem (para nómina y estadísticas correctas)
+      const nuevasVentas=items.map(it=>{
+        const svc=it.tipo==="service"?svcs.find(s=>s.id===it.sid):null;
+        const prd=it.tipo==="product"?products?.find(p=>p.id===it.pid):null;
+        return{
+          id:uid(),
+          cid:f.cid,
+          sid:it.sid||null,
+          pid:it.pid||null,
+          tid:it.tid||null,
+          type:it.tipo==="product"?"retail":"service",
+          amount:+it.monto,
+          disc:it===items[0]?+f.disc:0,
+          discType:it===items[0]?f.discType:"pct",
+          discMonto:it===items[0]?descMonto:0,
+          tip:it===items[items.length-1]?+f.tip:0,
+          pay:payStr,
+          pagos:it===items[0]?f.pagos:[],
+          base:+it.monto,
+          total:+it.monto,
+          date:f.date,
+          notes:it.nota||(svc?.name||prd?.name||""),
+        };
+      });
+      // También guardar resumen consolidado
+      const ventaResumen={
+        id:uid()+"_res",
+        cid:f.cid,
+        type:"resumen",
+        items,
+        amount:subtotalItems,
         disc:+f.disc,
         discMonto:descMonto,
         discType:f.discType,
         tip:+f.tip,
         pay:payStr,
         pagos:f.pagos,
-        base:base,       // valor sin propina
-        total:net,       // valor total final (base+propina)
-        fecha:f.date,
+        base,
+        total:net,
+        date:f.date,
       };
-      setSales(p=>[...p,ventaFinal]);
-      toast("Venta registrada ✓");setModal(false);
+      setSales(p=>[...p,...nuevasVentas,ventaResumen]);
+      toast(`Venta registrada — ${fmt(net)} ✓`);setModal(false);
     };
 
     return(
       <Modal title="Registrar venta" onClose={()=>setModal(false)} w={580}>
+        {/* Fecha y cliente */}
         <Row>
-          <Fld lbl="Tipo"><Sel value={f.type} onChange={e=>set("type",e.target.value)}><option value="service">Servicio</option><option value="retail">Retail / Producto</option><option value="other">Otro</option></Sel></Fld>
           <Fld lbl="Fecha"><Inp type="date" value={f.date} onChange={e=>set("date",e.target.value)}/></Fld>
+          <Fld lbl="Cliente"><Sel value={f.cid} onChange={e=>set("cid",e.target.value)}>
+            {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </Sel></Fld>
         </Row>
-        {f.type==="service"&&<Row>
-          <Fld lbl="Cliente"><Sel value={f.cid} onChange={e=>set("cid",e.target.value)}>{clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</Sel></Fld>
-          <Fld lbl="Servicio"><Sel value={f.sid} onChange={e=>set("sid",e.target.value)}>{svcs.filter(s=>s.active).map(s=><option key={s.id} value={s.id}>{s.name} — {fmt(s.price)}</option>)}</Sel></Fld>
-        </Row>}
-        <Row>
-          <Fld lbl="Estilista"><Sel value={f.tid} onChange={e=>set("tid",e.target.value)}>{staff.filter(s=>s.active).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Sel></Fld>
-          <Fld lbl="Descripción / Notas"><Inp value={f.notes} onChange={e=>set("notes",e.target.value)} placeholder="Producto, observación..."/></Fld>
-        </Row>
+        {/* Ítems: servicios, productos, estilistas */}
+        <div style={{...sx.card,padding:14,marginBottom:12,border:`1px solid ${C.border}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={{color:C.muted,fontSize:10,textTransform:"uppercase",letterSpacing:1}}>Ítems de la venta</div>
+            <button type="button" onClick={addItem} style={{...sx.ghost,padding:"4px 10px",fontSize:11}}>+ Agregar ítem</button>
+          </div>
+          {items.map((it,idx)=>(
+            <div key={it.id} style={{...sx.card,padding:12,marginBottom:8,background:C.surface,border:`1px solid ${C.border}44`}}>
+              <div style={{display:"flex",gap:6,marginBottom:8,alignItems:"center"}}>
+                <Sel value={it.tipo} onChange={e=>setItem(it.id,"tipo",e.target.value)} style={{width:120,flexShrink:0}}>
+                  <option value="service">✂️ Servicio</option>
+                  <option value="product">🛍 Producto</option>
+                  <option value="other">📝 Otro</option>
+                </Sel>
+                {it.tipo==="service"&&<Sel value={it.sid} onChange={e=>setItem(it.id,"sid",e.target.value)} style={{flex:1}}>
+                  <option value="">— Seleccionar servicio —</option>
+                  {svcs.filter(s=>s.active).map(s=><option key={s.id} value={s.id}>{s.name} — Desde: {fmt(s.price)}</option>)}
+                </Sel>}
+                {it.tipo==="product"&&<Sel value={it.pid} onChange={e=>setItem(it.id,"pid",e.target.value)} style={{flex:1}}>
+                  <option value="">— Seleccionar producto —</option>
+                  {(products||[]).filter(p=>p.active).map(p=><option key={p.id} value={p.id}>{p.name} — {fmt(p.price)}</option>)}
+                </Sel>}
+                {it.tipo==="other"&&<Inp value={it.nota||""} onChange={e=>setItem(it.id,"nota",e.target.value)} placeholder="Descripción..." style={{flex:1}}/>}
+                {items.length>1&&<button onClick={()=>remItem(it.id)} style={{background:"transparent",border:"none",color:C.red,fontSize:18,cursor:"pointer",flexShrink:0,padding:"0 4px"}}>×</button>}
+              </div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <Fld lbl="Estilista / Responsable" style={{flex:1}}>
+                  <Sel value={it.tid} onChange={e=>setItem(it.id,"tid",e.target.value)}>
+                    <option value="">— Ninguno —</option>
+                    {staff.filter(s=>s.active).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                  </Sel>
+                </Fld>
+                <Fld lbl="Valor (COP)">
+                  <Inp type="number" value={it.monto} onChange={e=>setItem(it.id,"monto",+e.target.value)} style={{width:120}}/>
+                </Fld>
+              </div>
+            </div>
+          ))}
+          <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:`1px solid ${C.border}`,marginTop:4}}>
+            <span style={{color:C.muted,fontSize:12}}>Subtotal {items.length} ítem(s):</span>
+            <span style={{color:C.gold,fontWeight:700,fontSize:14}}>{fmt(subtotalItems)}</span>
+          </div>
+        </div>
 
         {/* Valor + descuento */}
         <div style={{...sx.card,padding:14,marginBottom:12,border:`1px solid ${C.border}`}}>
@@ -1738,107 +1831,298 @@ function Inventario({inv,setInv,toast}){
   const [q,setQ]=useState("");
   const [tab,setTab]=useState("stock");
   const [modal,setModal]=useState(null);
-  const cats=["all",...new Set(inv.map(i=>i.cat))];
+  const [entradas,setEntradas]=useState({}); // cantidades a agregar por item
+  const cats=["all",...new Set(inv.map(i=>i.cat).filter(Boolean))];
   const list=inv.filter(i=>(cat==="all"||i.cat===cat)&&i.name.toLowerCase().includes(q.toLowerCase()));
   const low=inv.filter(i=>i.stock<=i.min);
-  const adj=(id,d)=>setInv(p=>p.map(i=>i.id===id?{...i,stock:Math.max(0,i.stock+d)}:i));
+  const valorTotal=inv.reduce((a,b)=>a+((+b.stock||0)*(+b.cost||0)),0);
+
+  const ajustar=(id,delta)=>setInv(p=>p.map(i=>i.id===id?{...i,stock:Math.max(0,(+i.stock||0)+delta)}:i));
+  const agregarStock=(id)=>{
+    const cant=+entradas[id]||0;
+    if(cant<=0){toast("Ingresa una cantidad mayor a 0","error");return;}
+    setInv(p=>p.map(i=>i.id===id?{...i,stock:(+i.stock||0)+cant}:i));
+    setEntradas(p=>({...p,[id]:""}));
+    toast(`+${cant} unidades agregadas ✓`);
+  };
 
   function ItemForm({item}){
-    const blank={name:"",cat:"Extensiones",stock:0,min:5,cost:0,sale:0,unit:"unidad",supplier:""};
+    const blank={name:"",cat:"Retail",stock:0,min:5,cost:0,sale:0,unit:"unidad",supplier:"",barcode:"",desc:""};
     const [f,setF]=useState(item||blank);
     const set=(k,v)=>setF(p=>({...p,[k]:v}));
+    const [addQty,setAddQty]=useState("");
     const save=()=>{
       if(!f.name){toast("El nombre es requerido","error");return;}
       const fn={...f,stock:+f.stock,min:+f.min,cost:+f.cost,sale:+f.sale};
-      if(item){setInv(p=>p.map(i=>i.id===item.id?fn:i));}else{setInv(p=>[...p,{...fn,id:uid()}]);}
-      toast(item?"Actualizado":"Producto creado");setModal(null);
+      if(addQty&&+addQty>0) fn.stock=(+f.stock||0)+(+addQty);
+      if(item){setInv(p=>p.map(i=>i.id===item.id?fn:i));}
+      else{setInv(p=>[...p,{...fn,id:uid()}]);}
+      toast(item?"Producto actualizado ✓":"Producto creado ✓");setModal(null);
     };
     const del=()=>{setInv(p=>p.filter(i=>i.id!==item.id));toast("Eliminado","warn");setModal(null);};
+    const genBarcode=()=>set("barcode",String(Date.now()).slice(-13));
+    const margin=f.sale>0&&f.cost>0?((f.sale-f.cost)/f.sale*100).toFixed(1):null;
+
     return(
-      <Modal title={item?"Editar producto":"Nuevo producto"} onClose={()=>setModal(null)}>
-        <Row>
-          <Fld lbl="Nombre del servicio *"><Inp value={f.name} onChange={e=>set("name",e.target.value)} placeholder="Ej: Tape-In Extensions"/></Fld>
-          <Fld lbl="Categoría">
-            <div style={{display:"flex",gap:6}}>
-              <Inp value={f.cat} onChange={e=>set("cat",e.target.value)} placeholder="Ej: Extensiones" style={{flex:1}}/>
+      <Modal title={item?"Editar producto":"Nuevo producto"} onClose={()=>setModal(null)} w={580}>
+        {/* Datos básicos */}
+        <div style={{...sx.card,padding:14,marginBottom:12}}>
+          <div style={{color:C.muted,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Datos del producto</div>
+          <Row>
+            <Fld lbl="Nombre del producto *"><Inp value={f.name} onChange={e=>set("name",e.target.value)} placeholder="Shampoo Sin Sulfatos 300ml"/></Fld>
+            <Fld lbl="Categoría">
+              <Inp value={f.cat} onChange={e=>set("cat",e.target.value)} placeholder="Retail, Insumos..."/>
+              <div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:5}}>
+                {["Retail","Insumos","Extensiones","Kits","Accesorios","Coloración","Biomédico","Regalos"].map(c=>(
+                  <button key={c} type="button" onClick={()=>set("cat",c)}
+                    style={{...sx.ghost,padding:"2px 7px",fontSize:10,
+                      background:f.cat===c?C.goldD:"transparent",
+                      color:f.cat===c?C.gold:C.muted,
+                      border:`1px solid ${f.cat===c?C.gold:C.border}`}}>
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </Fld>
+          </Row>
+          <Row>
+            <Fld lbl="Unidad de medida">
+              <Sel value={f.unit} onChange={e=>set("unit",e.target.value)}>
+                {["unidad","botella","kit","paquete","caja","litro","ml","kg","g"].map(u=><option key={u}>{u}</option>)}
+              </Sel>
+            </Fld>
+            <Fld lbl="Proveedor"><Inp value={f.supplier||""} onChange={e=>set("supplier",e.target.value)} placeholder="L'Oréal, Belleza Pro..."/></Fld>
+          </Row>
+          <Fld lbl="Descripción"><Inp value={f.desc||""} onChange={e=>set("desc",e.target.value)} placeholder="Breve descripción del producto..."/></Fld>
+        </div>
+
+        {/* Código de barras */}
+        <div style={{...sx.card,padding:14,marginBottom:12}}>
+          <div style={{color:C.muted,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Código de barras</div>
+          <div style={{display:"flex",gap:6,marginBottom:8}}>
+            <Inp value={f.barcode||""} onChange={e=>set("barcode",e.target.value.replace(/\D/g,""))} placeholder="Ej: 7701234560001 (solo números)" style={{flex:1}}/>
+            <button type="button" style={{...sx.ghost,flexShrink:0,padding:"9px 12px",fontSize:11}} onClick={genBarcode}>Generar</button>
+          </div>
+          {f.barcode&&<BarcodeDisplay value={f.barcode}/>}
+        </div>
+
+        {/* Stock */}
+        <div style={{...sx.card,padding:14,marginBottom:12}}>
+          <div style={{color:C.muted,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Control de inventario</div>
+          <Row cols={3}>
+            <Fld lbl="Stock actual">
+              <Inp type="number" value={f.stock} onChange={e=>set("stock",+e.target.value)} min={0}/>
+            </Fld>
+            <Fld lbl="Stock mínimo (alerta)">
+              <Inp type="number" value={f.min} onChange={e=>set("min",+e.target.value)} min={0}/>
+            </Fld>
+            <Fld lbl="➕ Agregar al stock">
+              <div style={{display:"flex",gap:5}}>
+                <Inp type="number" value={addQty} onChange={e=>setAddQty(e.target.value)} placeholder="0" min={0} style={{flex:1}}/>
+              </div>
+              {addQty&&+addQty>0&&<div style={{color:C.green,fontSize:11,marginTop:3}}>Nuevo total: {(+f.stock||0)+(+addQty)} unidades</div>}
+            </Fld>
+          </Row>
+        </div>
+
+        {/* Precios */}
+        <div style={{...sx.card,padding:14,marginBottom:12}}>
+          <div style={{color:C.muted,fontSize:10,textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Precios</div>
+          <Row>
+            <Fld lbl="Costo unitario (COP)"><Inp type="number" value={f.cost} onChange={e=>set("cost",+e.target.value)} min={0}/></Fld>
+            <Fld lbl="Precio de venta (COP)"><Inp type="number" value={f.sale} onChange={e=>set("sale",+e.target.value)} min={0}/></Fld>
+          </Row>
+          {margin&&(
+            <div style={{...sx.card,padding:10,background:+margin>30?C.greenD:C.orangeD,border:`1px solid ${+margin>30?C.green:C.orange}44`,marginTop:4}}>
+              <div style={{color:+margin>30?C.green:C.orange,fontSize:13}}>
+                Margen: <b>{margin}%</b> &nbsp;·&nbsp; Ganancia por unidad: {fmt(f.sale-f.cost)} &nbsp;·&nbsp; Valor en bodega: {fmt((+f.stock||0)*f.cost)}
+              </div>
             </div>
-            <div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:5}}>
-              {[...new Set(svcs.map(s=>s.cat))].filter(Boolean).map(c=>(
-                <button key={c} type="button" onClick={()=>set("cat",c)}
-                  style={{...sx.ghost,padding:"3px 8px",fontSize:10,
-                    background:f.cat===c?C.goldD:"transparent",
-                    color:f.cat===c?C.gold:C.muted,
-                    border:`1px solid ${f.cat===c?C.gold:C.border}`}}>
-                  {c}
-                </button>
-              ))}
-              {["Extensiones","Biomédico","Color","Tratamiento","Corte","Mantenimiento","Especial"].filter(c=>![...new Set(svcs.map(s=>s.cat))].includes(c)).map(c=>(
-                <button key={c} type="button" onClick={()=>set("cat",c)}
-                  style={{...sx.ghost,padding:"3px 8px",fontSize:10,color:C.muted}}>
-                  + {c}
-                </button>
-              ))}
-            </div>
-          </Fld>
-        </Row>
-        <Row cols={3}><Fld lbl="Stock"><Inp type="number" value={f.stock} onChange={e=>set("stock",e.target.value)}/></Fld><Fld lbl="Mínimo"><Inp type="number" value={f.min} onChange={e=>set("min",e.target.value)}/></Fld><Fld lbl="Unidad"><Inp value={f.unit} onChange={e=>set("unit",e.target.value)}/></Fld></Row>
-        <Row><Fld lbl="Costo unitario"><Inp type="number" value={f.cost} onChange={e=>set("cost",e.target.value)}/></Fld><Fld lbl="Precio retail"><Inp type="number" value={f.sale} onChange={e=>set("sale",e.target.value)}/></Fld></Row>
-        <Fld lbl="Proveedor"><Inp value={f.supplier} onChange={e=>set("supplier",e.target.value)}/></Fld>
-        <div style={{display:"flex",gap:8,marginTop:16}}><button style={sx.btn} onClick={save}>{item?"Guardar":"Agregar"}</button><button style={sx.ghost} onClick={()=>setModal(null)}>Cancelar</button>{item&&<button style={{...sx.danger,marginLeft:"auto"}} onClick={del}>Eliminar</button>}</div>
+          )}
+        </div>
+
+        <div style={{display:"flex",gap:8,marginTop:4}}>
+          <button style={sx.btn} onClick={save}>{item?"Guardar cambios":"Crear producto"}</button>
+          <button style={sx.ghost} onClick={()=>setModal(null)}>Cancelar</button>
+          {item&&<button style={{...sx.danger,marginLeft:"auto"}} onClick={del}>Eliminar</button>}
+        </div>
       </Modal>
     );
   }
 
   return(
     <div>
-      <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",justifyContent:"space-between",alignItems:"center"}}>
-        <Inp value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 Buscar producto..." style={{flex:1,minWidth:180}}/>
+      {/* Header KPIs */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10,marginBottom:16}}>
+        <KPI label="Valor en bodega" value={fmtM(valorTotal)} sub={`${inv.length} productos`} accent={C.gold} icon="📦"/>
+        <KPI label="Stock bajo" value={low.length} sub="bajo mínimo" accent={low.length>0?C.red:C.green} icon="⚠️"/>
+        <KPI label="Total unidades" value={inv.reduce((a,b)=>a+(+b.stock||0),0)} sub="en inventario" accent={C.blue} icon="🔢"/>
+        <KPI label="Con código barras" value={inv.filter(i=>i.barcode).length} sub="de {inv.length}" accent={C.purple} icon="🔲"/>
+      </div>
+
+      {/* Filtros */}
+      <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",justifyContent:"space-between",alignItems:"center"}}>
+        <Inp value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 Buscar por nombre, código o proveedor..." style={{flex:1,minWidth:200}}/>
         <div style={{display:"flex",gap:6}}>
-          {["stock","alertas"].map(t=><button key={t} onClick={()=>setTab(t)} style={{...(tab===t?sx.btn:sx.ghost),padding:"7px 14px",fontSize:12,position:"relative"}}>{t==="alertas"?"⚠ Alertas":"Stock"}{t==="alertas"&&low.length>0&&<span style={{position:"absolute",top:-5,right:-5,background:C.red,color:"#fff",borderRadius:"50%",width:15,height:15,fontSize:9,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>{low.length}</span>}</button>)}
+          {[{id:"stock",l:"📦 Stock"},{id:"alertas",l:`⚠ Alertas${low.length>0?" ("+low.length+")":""}`},{id:"entradas",l:"➕ Entradas"}].map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{...(tab===t.id?sx.btn:sx.ghost),padding:"7px 12px",fontSize:12}}>{t.l}</button>
+          ))}
           <button style={sx.btn} onClick={()=>setModal({item:null})}>+ Producto</button>
         </div>
       </div>
-      <div style={{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap"}}>{cats.map(c=><button key={c} onClick={()=>setCat(c)} style={{...(cat===c?sx.btn:sx.ghost),padding:"4px 11px",fontSize:11}}>{c==="all"?"Todos":c}</button>)}</div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:10,marginBottom:14}}>
-        {[{l:"Valor total",v:fmtM(inv.reduce((a,b)=>a+b.stock*b.cost,0)),c:C.gold},{l:"Productos",v:inv.length,c:C.cream},{l:"Stock bajo",v:low.length,c:low.length>0?C.red:C.green}].map(k=><div key={k.l} style={{...sx.card,padding:12,textAlign:"center"}}><div style={{color:k.c,fontWeight:800,fontSize:17}}>{k.v}</div><div style={{color:C.muted,fontSize:10,marginTop:2,textTransform:"uppercase",letterSpacing:1}}>{k.l}</div></div>)}
+
+      {/* Categorías */}
+      <div style={{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap"}}>
+        {cats.map(c=>(
+          <button key={c} onClick={()=>setCat(c)} style={{...(cat===c?sx.btn:sx.ghost),padding:"4px 11px",fontSize:11}}>
+            {c==="all"?"Todos":c}
+          </button>
+        ))}
       </div>
-      {tab==="alertas"&&<div style={{...sx.card,padding:18,marginBottom:14,border:`1px solid ${C.red}44`}}>
-        <div style={{color:C.red,fontWeight:700,marginBottom:10}}>⚠ Productos con stock bajo</div>
-        {low.length===0&&<div style={{color:C.green}}>✓ Todo el inventario en niveles óptimos</div>}
-        {low.map(i=><div key={i.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
-          <div><div style={{color:C.cream,fontSize:13}}>{i.name}</div><div style={{color:C.muted,fontSize:11}}>{i.supplier}</div></div>
-          <div style={{display:"flex",gap:8,alignItems:"center"}}><span style={{color:C.red,fontWeight:800,fontSize:16}}>{i.stock}</span><span style={{color:C.muted,fontSize:12}}>/ mín.{i.min} {i.unit}</span><button style={sx.btn} onClick={()=>adj(i.id,10)}>+10</button></div>
-        </div>)}
-      </div>}
-      {tab==="stock"&&<div style={{display:"flex",flexDirection:"column",gap:8}}>
-        {list.map(item=>{
-          const isLow=item.stock<=item.min,pct=Math.min(100,(item.stock/Math.max(item.min*2,1))*100);
-          const margin=item.sale>0?((item.sale-item.cost)/item.sale*100).toFixed(0):null;
-          return(
-            <div key={item.id} style={{...sx.card,padding:"13px 16px",border:`1px solid ${isLow?C.red+"55":C.border}`}}>
-              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                <div style={{flex:1,minWidth:150}}>
-                  <div style={{display:"flex",gap:7,alignItems:"center",marginBottom:2}}><span style={{color:C.cream,fontWeight:600,fontSize:13}}>{item.name}</span>{isLow&&<Badge c={C.red} sm>Bajo</Badge>}</div>
-                  <div style={{color:C.muted,fontSize:11}}>{item.cat} · {item.supplier}</div>
-                  <div style={{marginTop:6,height:3,background:C.border,borderRadius:2,overflow:"hidden",maxWidth:180}}><div style={{width:`${pct}%`,height:"100%",background:isLow?C.red:C.green,borderRadius:2}}/></div>
+
+      {/* TAB: STOCK */}
+      {tab==="stock"&&(
+        <div>
+          {/* Tabla header */}
+          <div style={{...sx.card,display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1.2fr 0.5fr",padding:"8px 0",marginBottom:6}}>
+            {["Producto","Categoría","Código","Stock","Precio costo/venta",""].map(h=>(
+              <div key={h} style={{color:C.muted,fontSize:9,letterSpacing:1,textTransform:"uppercase",padding:"0 12px"}}>{h}</div>
+            ))}
+          </div>
+          {list.map(item=>{
+            const isLow=+item.stock<=(+item.min||0);
+            const pct=Math.min(100,((+item.stock||0)/Math.max((+item.min||1)*2,1))*100);
+            return(
+              <div key={item.id} style={{...sx.card,marginBottom:6,border:`1px solid ${isLow?C.red+"44":C.border}`}}>
+                <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1.2fr 0.5fr",alignItems:"center",padding:"0"}}>
+                  {/* Nombre */}
+                  <div style={{padding:"12px 12px"}}>
+                    <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <div>
+                        <div style={{color:C.cream,fontWeight:600,fontSize:13}}>{item.name}</div>
+                        <div style={{color:C.muted,fontSize:11}}>{item.supplier||"—"} · {item.unit}</div>
+                        {item.barcode&&<div style={{fontFamily:"monospace",fontSize:10,color:C.purple,marginTop:2}}>🔲 {item.barcode}</div>}
+                      </div>
+                    </div>
+                    {/* Barra de stock */}
+                    <div style={{marginTop:6,height:3,background:C.border,borderRadius:2,maxWidth:180}}>
+                      <div style={{width:`${pct}%`,height:"100%",background:isLow?C.red:C.green,borderRadius:2}}/>
+                    </div>
+                    <div style={{color:C.muted,fontSize:9,marginTop:2}}>Mín: {item.min} · {isLow?"⚠ BAJO":"✓ OK"}</div>
+                  </div>
+                  {/* Cat */}
+                  <div style={{padding:"12px 12px"}}>
+                    <Badge c={C.blue} sm>{item.cat}</Badge>
+                  </div>
+                  {/* Código */}
+                  <div style={{padding:"12px 12px",fontFamily:"monospace",color:C.muted,fontSize:11}}>
+                    {item.barcode||"—"}
+                  </div>
+                  {/* Stock con controles */}
+                  <div style={{padding:"12px 12px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <button onClick={()=>ajustar(item.id,-1)} style={{width:24,height:24,borderRadius:"50%",background:C.surface,border:`1px solid ${C.border}`,color:C.cream,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
+                      <span style={{color:isLow?C.red:C.cream,fontWeight:800,fontSize:18,minWidth:30,textAlign:"center"}}>{item.stock}</span>
+                      <button onClick={()=>ajustar(item.id,1)} style={{width:24,height:24,borderRadius:"50%",background:C.gold,border:"none",color:C.bg,fontSize:14,cursor:"pointer",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
+                    </div>
+                  </div>
+                  {/* Precios */}
+                  <div style={{padding:"12px 12px"}}>
+                    <div style={{color:C.muted,fontSize:11}}>Costo: {fmt(item.cost)}</div>
+                    {item.sale>0&&<div style={{color:C.goldL,fontWeight:600,fontSize:12}}>Venta: {fmt(item.sale)}</div>}
+                    <div style={{color:C.muted,fontSize:10}}>Total: {fmt((+item.stock||0)*(+item.cost||0))}</div>
+                  </div>
+                  {/* Edit */}
+                  <div style={{padding:"12px 8px"}}>
+                    <button style={{...sx.ghost,padding:"6px 8px",fontSize:12}} onClick={()=>setModal({item})}>✏</button>
+                  </div>
                 </div>
-                <div style={{display:"flex",gap:5,alignItems:"center"}}>
-                  <button onClick={()=>adj(item.id,-1)} style={{width:27,height:27,borderRadius:"50%",background:C.surface,border:`1px solid ${C.border}`,color:C.cream,fontSize:15,cursor:"pointer"}}>−</button>
-                  <div style={{textAlign:"center",minWidth:48}}><div style={{color:isLow?C.red:C.cream,fontWeight:800,fontSize:19}}>{item.stock}</div><div style={{color:C.muted,fontSize:9}}>mín.{item.min}</div></div>
-                  <button onClick={()=>adj(item.id,1)} style={{width:27,height:27,borderRadius:"50%",background:C.gold,border:"none",color:C.bg,fontSize:15,cursor:"pointer",fontWeight:800}}>+</button>
+              </div>
+            );
+          })}
+          {list.length===0&&<div style={{...sx.card,padding:40,textAlign:"center",color:C.muted}}>Sin productos en esta categoría</div>}
+        </div>
+      )}
+
+      {/* TAB: ALERTAS */}
+      {tab==="alertas"&&(
+        <div>
+          {low.length===0?(
+            <div style={{...sx.card,padding:40,textAlign:"center"}}>
+              <div style={{fontSize:40,marginBottom:10}}>✅</div>
+              <div style={{color:C.green,fontWeight:700}}>Todo el inventario en niveles óptimos</div>
+            </div>
+          ):(
+            <div>
+              <div style={{color:C.red,fontWeight:700,marginBottom:12}}>{low.length} producto(s) por debajo del mínimo</div>
+              {low.map(item=>(
+                <div key={item.id} style={{...sx.card,padding:16,marginBottom:8,border:`1px solid ${C.red}44`,background:C.redD}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+                    <div>
+                      <div style={{color:C.cream,fontWeight:700,fontSize:14}}>{item.name}</div>
+                      <div style={{color:C.muted,fontSize:12}}>{item.cat} · {item.supplier}</div>
+                      {item.barcode&&<div style={{fontFamily:"monospace",color:C.muted,fontSize:11}}>🔲 {item.barcode}</div>}
+                    </div>
+                    <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                      <div style={{textAlign:"center"}}>
+                        <div style={{color:C.red,fontWeight:900,fontSize:24}}>{item.stock}</div>
+                        <div style={{color:C.muted,fontSize:10}}>actual / mín {item.min}</div>
+                      </div>
+                      <div style={{display:"flex",gap:5}}>
+                        <button style={{...sx.btn,background:C.green,padding:"7px 12px",fontSize:12}} onClick={()=>ajustar(item.id,item.min-item.stock+item.min)}>Llenar a mín.</button>
+                        <button style={{...sx.btn,background:C.gold,padding:"7px 12px",fontSize:12}} onClick={()=>ajustar(item.id,10)}>+10</button>
+                        <button style={{...sx.ghost,padding:"7px 10px",fontSize:12}} onClick={()=>setModal({item})}>✏</button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div style={{textAlign:"right",minWidth:90}}><div style={{color:C.goldL,fontWeight:700,fontSize:12}}>{fmt(item.cost)}/{item.unit}</div>{margin&&<div style={{color:C.green,fontSize:11}}>Margen {margin}%</div>}<div style={{color:C.muted,fontSize:11}}>Total: {fmt(item.stock*item.cost)}</div></div>
-                <button style={{...sx.ghost,padding:"6px 10px",fontSize:11}} onClick={()=>setModal({item})}>✏</button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB: ENTRADAS — sumar stock de bodega */}
+      {tab==="entradas"&&(
+        <div>
+          <div style={{...sx.card,padding:14,marginBottom:14,background:C.greenD,border:`1px solid ${C.green}44`}}>
+            <div style={{color:C.green,fontWeight:700,fontSize:13}}>📦 Registro de entradas de bodega</div>
+            <div style={{color:C.muted,fontSize:12,marginTop:4}}>Ingresa la cantidad recibida para cada producto. El sistema sumará al stock existente.</div>
+          </div>
+          {list.map(item=>(
+            <div key={item.id} style={{...sx.card,padding:"12px 16px",marginBottom:8,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <div style={{flex:1,minWidth:150}}>
+                <div style={{color:C.cream,fontWeight:600,fontSize:13}}>{item.name}</div>
+                <div style={{color:C.muted,fontSize:11}}>{item.cat} · Stock actual: <b style={{color:+item.stock<=(+item.min||0)?C.red:C.green}}>{item.stock} {item.unit}</b></div>
+                {item.barcode&&<div style={{fontFamily:"monospace",color:C.muted,fontSize:10}}>🔲 {item.barcode}</div>}
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
+                <Inp type="number" min={0} placeholder="Cant. a agregar"
+                  value={entradas[item.id]||""}
+                  onChange={e=>setEntradas(p=>({...p,[item.id]:e.target.value}))}
+                  style={{width:130}}/>
+                <span style={{color:C.muted,fontSize:12}}>{item.unit}</span>
+                {entradas[item.id]&&+entradas[item.id]>0&&(
+                  <div style={{color:C.green,fontSize:11,whiteSpace:"nowrap"}}>
+                    → {(+item.stock||0)+(+entradas[item.id]||0)} total
+                  </div>
+                )}
+                <button style={{...sx.btn,background:C.green,padding:"8px 14px",fontSize:12,flexShrink:0}}
+                  onClick={()=>agregarStock(item.id)}>
+                  ➕ Agregar
+                </button>
               </div>
             </div>
-          );
-        })}
-      </div>}
+          ))}
+          {list.length===0&&<div style={{color:C.muted,textAlign:"center",padding:40}}>Sin productos</div>}
+        </div>
+      )}
+
       {modal&&<ItemForm item={modal.item}/>}
     </div>
   );
 }
-// ── MARKETPLACE ─────────────────────────────────────────────────────
+
 function BarcodeDisplay({value}){
   if(!value) return null;
   const bars=String(value).split("").flatMap((d,i)=>{
@@ -1899,7 +2183,7 @@ function Marketplace({products,setProducts,orders,setOrders,clients,toast}){
                   {c}
                 </button>
               ))}
-              {["Extensiones","Biomédico","Color","Tratamiento","Corte","Mantenimiento","Especial"].filter(c=>![...new Set(svcs.map(s=>s.cat))].includes(c)).map(c=>(
+              {["Extensiones","Retail","Biomédico","Insumos","Accesorios","Coloración","Tratamiento","Kits","Regalos","Otro"].filter(c=>![...new Set(inv.map(i=>i.cat))].includes(c)).map(c=>(
                 <button key={c} type="button" onClick={()=>set("cat",c)}
                   style={{...sx.ghost,padding:"3px 8px",fontSize:10,color:C.muted}}>
                   + {c}
@@ -4004,7 +4288,10 @@ function Servicios({svcs,setSvcs,staff,toast}){
                   {!svc.active&&<Badge c={C.muted} sm>Inactivo</Badge>}
                 </div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:7}}>
-                  <div style={{color:svc.color,fontWeight:800,fontSize:17}}>{fmt(svc.price)}</div>
+                  <div>
+                    <div style={{color:C.muted,fontSize:9,textTransform:"uppercase",letterSpacing:1}}>Desde</div>
+                    <div style={{color:svc.color,fontWeight:800,fontSize:17}}>{fmt(svc.price)}</div>
+                  </div>
                   <div style={{background:C.goldD,border:`1px solid ${C.gold}44`,borderRadius:5,padding:"2px 8px",color:C.gold,fontSize:11,fontWeight:600}}>⏱ {svc.duration}min</div>
                 </div>
               </div>
